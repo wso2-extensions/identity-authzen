@@ -1,0 +1,595 @@
+openapi: 3.0.3
+info:
+  title: WSO2 Identity Server AuthZEN Authorization API
+  version: 1.0.0
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  description: |
+    The [OpenID AuthZEN Authorization API 1.0](https://openid.net/specs/authorization-api-1_0.html) for WSO2
+    Identity Server. Decisions come from the identity server's roles, API resources and application
+    authorizations; see [decision-model.md](decision-model.md). The search APIs are not implemented.
+servers:
+  - url: https://{host}
+    description: Super tenant (`carbon.super`).
+    variables:
+      host:
+        default: localhost:9443
+  - url: https://{host}/t/{tenant}
+    description: |
+      A tenant. Applies to the `/access/v1` endpoints only. The tenant's metadata is at
+      `/.well-known/authzen-configuration/t/{tenant}` on the root server, not under this prefix.
+    variables:
+      host:
+        default: localhost:9443
+      tenant:
+        default: carbon.super
+security:
+  - oauth2: [internal_authzen_evaluate]
+  - basicAuth: []
+tags:
+  - name: Access evaluation
+    description: Single and batch access decisions.
+  - name: Metadata
+    description: Public PDP metadata for discovery.
+paths:
+  /access/v1/evaluation:
+    post:
+      tags: [Access evaluation]
+      operationId: evaluate
+      summary: Access Evaluation API
+      description: Decides whether a subject may perform an action on a resource.
+      security:
+        - oauth2: [internal_authzen_evaluate]
+        - basicAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XRequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EvaluationRequest"
+            examples:
+              user:
+                summary: A user, for a given application
+                value:
+                  subject:
+                    type: user
+                    id: 8a1c5d0e-6f3b-4b2a-9e7d-1f2a3b4c5d6e
+                  action:
+                    name: orders:read
+                  resource:
+                    type: api_resource
+                    id: https://api.example.com/orders
+                    properties:
+                      app_id: 2f6b0c1d-3e4a-4b5c-8d9e-0a1b2c3d4e5f
+              agent:
+                summary: An agent
+                value:
+                  subject:
+                    type: agent
+                    id: 5d7e9f1a-2b3c-4d5e-8f9a-0b1c2d3e4f5a
+                  action:
+                    name: orders:read
+                  resource:
+                    type: api_resource
+                    id: https://api.example.com/orders
+              application:
+                summary: An application acting for itself
+                value:
+                  subject:
+                    type: application
+                    id: 2f6b0c1d-3e4a-4b5c-8d9e-0a1b2c3d4e5f
+                  action:
+                    name: orders:write
+                  resource:
+                    type: api_resource
+                    id: https://api.example.com/orders
+      responses:
+        "200":
+          description: "The decision. A deny is a `200` response with `\"decision\": false`."
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationResponse"
+              examples:
+                permit:
+                  value:
+                    decision: true
+                    context:
+                      reason_admin:
+                        "200": Permitted by the RBAC policy.
+                deny:
+                  value:
+                    decision: false
+                    context:
+                      reason_admin:
+                        "403": The application is not authorized for action orders:write on resource https://api.example.com/orders.
+                notFound:
+                  summary: An entity that does not exist
+                  value:
+                    decision: false
+                    context:
+                      reason_admin:
+                        "403": Subject not found.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /access/v1/evaluations:
+    post:
+      tags: [Access evaluation]
+      operationId: evaluateBatch
+      summary: Access Evaluations API
+      description: |
+        Evaluates up to 100 requests in one call. Each entry of `evaluations` takes `subject`, `action`,
+        `resource` and `context` from the top level unless it sets them itself; a key set in an entry replaces
+        the top-level value as a whole. Decisions are returned in request order.
+
+        An entry that is invalid is returned as a deny with `context.error` instead of failing the request.
+
+        Without an `evaluations` array (or with an empty one), the request is a single evaluation and the
+        response is a single decision.
+      security:
+        - oauth2: [internal_authzen_evaluate]
+        - basicAuth: []
+      parameters:
+        - $ref: "#/components/parameters/XRequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EvaluationsRequest"
+            examples:
+              batch:
+                value:
+                  subject:
+                    type: user
+                    id: 8a1c5d0e-6f3b-4b2a-9e7d-1f2a3b4c5d6e
+                  resource:
+                    type: api_resource
+                    id: https://api.example.com/orders
+                  evaluations:
+                    - action:
+                        name: orders:read
+                    - action:
+                        name: orders:write
+                    - action:
+                        name: orders:write
+                      resource:
+                        type: api_resource
+                        id: https://api.example.com/orders
+                        properties:
+                          app_id: 2f6b0c1d-3e4a-4b5c-8d9e-0a1b2c3d4e5f
+                  options:
+                    evaluations_semantic: execute_all
+      responses:
+        "200":
+          description: |
+            The decisions, or a single decision when the request has no `evaluations`. With
+            `deny_on_first_deny` or `permit_on_first_permit`, the list ends at the decision that stopped the
+            evaluation.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/EvaluationsResponse"
+                  - $ref: "#/components/schemas/EvaluationResponse"
+              examples:
+                batch:
+                  value:
+                    evaluations:
+                      - decision: true
+                        context:
+                          reason_admin:
+                            "200": Permitted by the RBAC policy.
+                      - decision: false
+                        context:
+                          reason_admin:
+                            "403": The RBAC policy does not permit action orders:write on resource https://api.example.com/orders.
+                      - decision: true
+                        context:
+                          reason_admin:
+                            "200": Permitted by the RBAC policy.
+                invalidEntry:
+                  summary: An entry without an action
+                  value:
+                    evaluations:
+                      - decision: true
+                        context:
+                          reason_admin:
+                            "200": Permitted by the RBAC policy.
+                      - decision: false
+                        context:
+                          error:
+                            status: 400
+                            message: Action is required.
+        "400":
+          description: |
+            The request is not valid as a whole: malformed JSON, more than 100 evaluations, or an unsupported
+            `evaluations_semantic`.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooMany:
+                  value:
+                    error: invalid_request
+                    error_description: A request may contain at most 100 evaluations.
+                    error_code: AZ-40000
+                semantic:
+                  value:
+                    error: invalid_request
+                    error_description: "Unsupported evaluations_semantic: first_applicable"
+                    error_code: AZ-40000
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /.well-known/authzen-configuration:
+    get:
+      tags: [Metadata]
+      operationId: getMetadata
+      summary: PDP metadata of the super tenant
+      description: Public. Use the first server (no tenant prefix).
+      security: []
+      responses:
+        "200":
+          description: The PDP metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Metadata"
+              example:
+                policy_decision_point: https://localhost:9443
+                access_evaluation_endpoint: https://localhost:9443/access/v1/evaluation
+                access_evaluations_endpoint: https://localhost:9443/access/v1/evaluations
+  /.well-known/authzen-configuration/t/{tenant}:
+    get:
+      tags: [Metadata]
+      operationId: getTenantMetadata
+      summary: PDP metadata of a tenant
+      description: |
+        Public. The path is on the root server (the first server), not under the `/t/{tenant}` prefix. The
+        endpoints it lists are the tenant's.
+      security: []
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          description: Tenant domain.
+          schema:
+            type: string
+          example: example.com
+      responses:
+        "200":
+          description: The tenant's PDP metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Metadata"
+              example:
+                policy_decision_point: https://localhost:9443/t/example.com
+                access_evaluation_endpoint: https://localhost:9443/t/example.com/access/v1/evaluation
+                access_evaluations_endpoint: https://localhost:9443/t/example.com/access/v1/evaluations
+        "404":
+          description: The tenant does not exist.
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      description: |
+        An access token of an application authorized for the AuthZEN Authorization API. Without
+        `resource.properties.app_id`, evaluations run for this application.
+      flows:
+        clientCredentials:
+          tokenUrl: https://localhost:9443/oauth2/token
+          scopes:
+            internal_authzen_evaluate: Request access decisions (evaluation and evaluations).
+    basicAuth:
+      type: http
+      scheme: basic
+      description: A user whose roles grant the AuthZEN scopes.
+  parameters:
+    XRequestId:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: |
+        Correlates the request. Echoed in the response and written to the audit log. Ignored when longer than
+        256 characters or when it contains characters outside printable ASCII.
+      schema:
+        type: string
+        maxLength: 256
+      example: 7f3c2a10-9b1e-4c8d-a2f4-6e5d4c3b2a19
+  headers:
+    XRequestId:
+      description: The request's `X-Request-ID`, when it was accepted.
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: The request is not valid.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            malformed:
+              summary: Malformed JSON or an empty body
+              value:
+                error: invalid_request
+                error_description: Request body is not valid JSON
+                error_code: AZ-40000
+            missingSubject:
+              value:
+                error: missing_subject
+                error_description: Subject is required.
+                error_code: AZ-40001
+            missingAction:
+              value:
+                error: missing_action
+                error_description: Action is required.
+                error_code: AZ-40002
+            missingResource:
+              value:
+                error: missing_resource
+                error_description: Resource is required.
+                error_code: AZ-40003
+            unsupportedSubjectType:
+              value:
+                error: unsupported_subject_type
+                error_description: "Unsupported subject type: device"
+                error_code: AZ-40004
+            unsupportedResourceType:
+              value:
+                error: unsupported_resource_type
+                error_description: "Unsupported resource type: document"
+                error_code: AZ-40005
+            invalidAppId:
+              value:
+                error: invalid_request
+                error_description: Resource property app_id must be a non-empty string.
+                error_code: AZ-40000
+    Unauthorized:
+      description: |
+        The caller is not authenticated. Returned by the identity server before the request reaches the
+        connector, in the identity server's error format.
+    Forbidden:
+      description: |
+        The caller is authenticated but does not hold the required scope, `internal_authzen_evaluate`. Returned by
+        the identity server, in its error format.
+    PayloadTooLarge:
+      description: The request body is larger than 1 MB.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: request_too_large
+            error_description: Request body exceeds 1048576 bytes
+            error_code: AZ-41300
+    UnsupportedMediaType:
+      description: The `Content-Type` is not `application/json`.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: unsupported_media_type
+            error_description: Content-Type must be application/json
+            error_code: AZ-41500
+    InternalError:
+      description: The decision could not be made. Details are in the server log only.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: internal_error
+            error_description: Internal server error.
+            error_code: AZ-50002
+  schemas:
+    Subject:
+      type: object
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          enum: [user, agent, application]
+        id:
+          type: string
+          description: |
+            The user id for `user` and `agent` (an agent id with type `user`, or a user id with type `agent`,
+            is not found), or the application id for `application`.
+          example: 8a1c5d0e-6f3b-4b2a-9e7d-1f2a3b4c5d6e
+        properties:
+          type: object
+          description: Accepted but not used.
+          additionalProperties: true
+    Action:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: A scope of the resource.
+          example: orders:read
+        properties:
+          type: object
+          description: Accepted but not used.
+          additionalProperties: true
+    Resource:
+      type: object
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          enum: [api_resource]
+        id:
+          type: string
+          description: The API resource identifier.
+          example: https://api.example.com/orders
+        properties:
+          type: object
+          additionalProperties: true
+          properties:
+            app_id:
+              type: string
+              minLength: 1
+              description: |
+                The application the access is for. Ignored when the subject is an application. Defaults to the
+                application of the calling OAuth client; without either, the decision is a deny.
+              example: 2f6b0c1d-3e4a-4b5c-8d9e-0a1b2c3d4e5f
+    Context:
+      type: object
+      description: Accepted but not used in decisions.
+      additionalProperties: true
+    EvaluationRequest:
+      type: object
+      required: [subject, action, resource]
+      properties:
+        subject:
+          $ref: "#/components/schemas/Subject"
+        action:
+          $ref: "#/components/schemas/Action"
+        resource:
+          $ref: "#/components/schemas/Resource"
+        context:
+          $ref: "#/components/schemas/Context"
+    EvaluationResponse:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: boolean
+        context:
+          type: object
+          properties:
+            reason_admin:
+              type: object
+              description: |
+                Why the decision was made, for administrators. One key: `"200"` for a permit, `"403"` for a deny.
+              additionalProperties:
+                type: string
+            error:
+              type: object
+              description: Only in batch responses, for an entry that could not be evaluated.
+              required: [status, message]
+              properties:
+                status:
+                  type: integer
+                  enum: [400, 500]
+                message:
+                  type: string
+    EvaluationsRequest:
+      type: object
+      description: Top-level `subject`, `action`, `resource` and `context` are defaults for the entries.
+      properties:
+        subject:
+          $ref: "#/components/schemas/Subject"
+        action:
+          $ref: "#/components/schemas/Action"
+        resource:
+          $ref: "#/components/schemas/Resource"
+        context:
+          $ref: "#/components/schemas/Context"
+        evaluations:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            properties:
+              subject:
+                $ref: "#/components/schemas/Subject"
+              action:
+                $ref: "#/components/schemas/Action"
+              resource:
+                $ref: "#/components/schemas/Resource"
+              context:
+                $ref: "#/components/schemas/Context"
+        options:
+          type: object
+          additionalProperties: true
+          properties:
+            evaluations_semantic:
+              type: string
+              enum: [execute_all, deny_on_first_deny, permit_on_first_permit]
+              default: execute_all
+    EvaluationsResponse:
+      type: object
+      required: [evaluations]
+      properties:
+        evaluations:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationResponse"
+    Metadata:
+      type: object
+      required: [policy_decision_point, access_evaluation_endpoint]
+      properties:
+        policy_decision_point:
+          type: string
+          format: uri
+        access_evaluation_endpoint:
+          type: string
+          format: uri
+        access_evaluations_endpoint:
+          type: string
+          format: uri
+    Error:
+      type: object
+      required: [error, error_description, error_code]
+      properties:
+        error:
+          type: string
+          description: Short error identifier.
+          example: missing_subject
+        error_description:
+          type: string
+          example: Subject is required.
+        error_code:
+          type: string
+          description: |
+            `AZ-40000` invalid request, `AZ-40001` missing subject, `AZ-40002` missing action, `AZ-40003` missing
+            resource, `AZ-40004` unsupported subject type, `AZ-40005` unsupported resource type, `AZ-41300` body
+            too large, `AZ-41500` unsupported media type, `AZ-50002` internal error.
+          example: AZ-40001

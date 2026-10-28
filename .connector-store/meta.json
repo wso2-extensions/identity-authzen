@@ -1,0 +1,20 @@
+{
+  "name": "AuthZEN Connector",
+  "owner": "WSO2",
+  "category": "Fine Grained Authorization",
+  "documentationUrl": "https://github.com/wso2-extensions/identity-authzen/tree/main/docs",
+  "description": "The AuthZEN connector makes WSO2 Identity Server an OpenID AuthZEN Authorization API 1.0 policy decision point (PDP). Applications, API gateways and agents ask whether a subject may perform an action on a resource through a standard API, and get decisions from the roles, API resources and application authorizations already configured in the identity server.",
+  "status": "Active",
+  "labels": [
+    "Authorization",
+    "AuthZEN"
+  ],
+  "releases": [
+    {
+      "tagName": "v1.0.0",
+      "products": [
+        "IS 7.3.0"
+      ]
+    }
+  ]
+}
